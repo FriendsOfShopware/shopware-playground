@@ -4,7 +4,11 @@
   "description": "In-browser Shopware playground powered by PHP WASM and lite4mariadb (MariaDB WASM)",
   "type": "module",
   "private": true,
+  "bin": {
+    "playground": "src/cli.mjs"
+  },
   "scripts": {
+    "cli": "node src/cli.mjs",
     "test": "node --test --test-force-exit --test-timeout=180000 --test-concurrency=1 test/*.test.mjs",
     "dev": "node src/build-shell.mjs --workers && vite",
     "start": "node src/serve.mjs",

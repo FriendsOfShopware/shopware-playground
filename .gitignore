@@ -22,6 +22,9 @@ versions-src/*/shopware/*
 # persistent MariaDB datadirs (lite4mariadb NODEFS, per version)
 data/mariadb*/
 
+# CLI snapshots (playground snapshot create)
+snapshots/
+
 # Shopware runtime state
 shopware/var/cache/
 shopware/var/log/
