@@ -9,8 +9,15 @@ public/assets/
 public/versions/
 public/versions.json
 
-# additional Shopware version trees for the toggle (composer create-project)
-versions-src/
+# additional Shopware version trees for the toggle (composer create-project);
+# only the playground-specific customizations are committed
+versions-src/*/*
+!versions-src/*/shopware/
+versions-src/*/shopware/*
+!versions-src/*/shopware/overrides/
+!versions-src/*/shopware/config/
+!versions-src/*/shopware/composer.json
+!versions-src/*/shopware/composer.lock
 
 # persistent MariaDB datadirs (lite4mariadb NODEFS, per version)
 data/mariadb*/

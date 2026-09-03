@@ -1,0 +1,5 @@
+shopware:
+    admin_worker:
+        # The playground runs a single PHP WASM instance; the admin's
+        # background message-queue polling would constantly occupy it.
+        enable_admin_worker: false
