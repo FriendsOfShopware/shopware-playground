@@ -19,7 +19,7 @@
     "@php-wasm/universal": "^3.1.52",
     "@php-wasm/web": "^3.1.52",
     "esbuild": "^0.28.2",
-    "lite4mariadb": "^0.1.1"
+    "lite4mariadb": "^0.1.2"
   },
   "overrides": {
     "fs-ext-extra-prebuilt": "file:./shims/fs-ext-stub"
