@@ -1,0 +1,16 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "shopware-playground"
+main = "worker/index.mjs"
+compatibility_date = "2026-09-03"
+
+# The Worker must run first so every response (including static assets) gets
+# the COOP/COEP/CORP isolation headers required for crossOriginIsolated.
+assets = { directory = "./dist/cf-site", binding = "ASSETS", run_worker_first = true, html_handling = "none", not_found_handling = "none" }
+
+[[r2_buckets]]
+binding = "PLAYGROUND_R2"
+bucket_name = "shopware-playground"
+
+[[routes]]
+pattern = "playground.fos.gg"
+custom_domain = true

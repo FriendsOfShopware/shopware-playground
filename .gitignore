@@ -1,0 +1,23 @@
+node_modules/
+dist/
+
+# built browser assets (npm run build)
+public/app.js
+public/browser-worker.js
+public/service-worker.js
+public/assets/
+public/versions/
+public/versions.json
+
+# additional Shopware version trees for the toggle (composer create-project)
+versions-src/
+
+# persistent MariaDB datadirs (lite4mariadb NODEFS, per version)
+data/mariadb*/
+
+# Shopware runtime state
+shopware/var/cache/
+shopware/var/log/
+
+# Cloudflare local dev state
+.wrangler/
