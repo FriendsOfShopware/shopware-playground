@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Shell bundling shared by copy-assets.mjs (full build) and `npm run dev`
+ * Shell bundling shared by build.mjs (full build) and `npm run dev`
  * (workers only, then Vite serves the app with HMR):
  *
  * - app.js: Svelte shell, built by Vite (lib mode, see vite.config.mjs)

@@ -8,7 +8,7 @@ import { dumpDatabase } from './sql-dump.mjs';
 
 /**
  * @param {{ db: { query: (sql: string) => any[], exec: (sql: string) => any }, php: any }} playground
- * @param {{ version?: string, absoluteUrl?: string }} [options]
+ * @param {{ demo?: string, absoluteUrl?: string }} [options]
  * @returns {Promise<Uint8Array>} zip bytes
  */
 export async function buildExportZip(playground, options = {}) {
@@ -21,7 +21,7 @@ export async function buildExportZip(playground, options = {}) {
   const manifest = JSON.stringify({
     formatVersion: 1,
     kind: 'shopware-playground',
-    shopwareVersion: options.version || null,
+    demo: options.demo || null,
     siteUrl: options.absoluteUrl || null,
     exportedAt: new Date().toISOString(),
   });

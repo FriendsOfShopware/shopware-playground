@@ -5,12 +5,14 @@
  * (index.html, app.js, browser-worker.js, service-worker.js) come from the
  * Workers Static Assets binding; everything big lives in R2:
  *
- *   /versions/*      → R2 versions/*        (Shopware zips, SQL dumps, assets)
- *   /versions.json   → R2 versions.json
+ *   /demos/*         → R2 demos/*           (demo.json, Shopware zips, SQL dumps, assets —
+ *                                            built-in demos from deploy-cf.mjs and demos
+ *                                            uploaded by CI via `playground demo upload`)
+ *   /demos.json      → R2 demos.json        (index of built-in demos)
  *   /mariadb/*       → R2 mariadb/*         (lite4mariadb engine)
  *   /assets/*        → R2 assets/*          (PHP WASM runtime assets)
  *   /php/*           → R2 php/*             (auto_prepend)
- *   /bundles|theme|media|thumbnail/* → R2 versions/<default>/assets/*
+ *   /bundles|theme|media|thumbnail/* → R2 demos/<default>/assets/*
  *                        (only reached without the service worker, e.g. curl)
  *
  * Everything else falls back to the shell (Shopware front-controller routes
@@ -18,6 +20,7 @@
  * COOP/COEP/CORP so MariaDB WASM pthreads get crossOriginIsolated.
  */
 import { isPhpAppRoute } from '../src/app-route.mjs';
+import { DEMO_ASSET_PREFIXES, DEMOS_INDEX_PATH, DEMOS_PATH_PREFIX } from '../src/demo.mjs';
 import { contentTypeFor } from '../src/cf-content-types.mjs';
 
 const ISOLATION_HEADERS = {
@@ -26,35 +29,33 @@ const ISOLATION_HEADERS = {
   'Cross-Origin-Resource-Policy': 'same-origin',
 };
 
-const VERSIONED_ASSET_PREFIXES = ['/bundles/', '/theme/', '/media/', '/thumbnail/'];
+let cachedDefaultDemo;
 
-let cachedDefaultVersion;
-
-async function defaultVersion(env) {
-  if (cachedDefaultVersion !== undefined) return cachedDefaultVersion;
-  let version = '';
+async function defaultDemo(env) {
+  if (cachedDefaultDemo !== undefined) return cachedDefaultDemo;
+  let id = '';
   try {
-    const obj = await env.PLAYGROUND_R2.get('versions.json');
+    const obj = await env.PLAYGROUND_R2.get('demos.json');
     if (obj) {
-      const manifest = JSON.parse(await obj.text());
-      version = manifest.default || manifest.versions?.[0]?.id || '';
+      const index = JSON.parse(await obj.text());
+      id = index.default || index.demos?.[0]?.id || '';
     }
   } catch {
-    // fall through with empty version
+    // fall through with empty id
   }
-  cachedDefaultVersion = version;
-  return version;
+  cachedDefaultDemo = id;
+  return id;
 }
 
 async function r2KeyFor(pathname, env) {
-  if (pathname === '/versions.json') return 'versions.json';
-  for (const prefix of ['/versions/', '/mariadb/', '/assets/', '/php/']) {
+  if (pathname === DEMOS_INDEX_PATH) return 'demos.json';
+  for (const prefix of [DEMOS_PATH_PREFIX, '/mariadb/', '/assets/', '/php/']) {
     if (pathname.startsWith(prefix)) return pathname.slice(1);
   }
-  for (const prefix of VERSIONED_ASSET_PREFIXES) {
+  for (const prefix of DEMO_ASSET_PREFIXES) {
     if (pathname.startsWith(prefix)) {
-      const version = await defaultVersion(env);
-      return version ? 'versions/' + version + '/assets' + pathname : null;
+      const id = await defaultDemo(env);
+      return id ? 'demos/' + id + '/assets' + pathname : null;
     }
   }
   return null;

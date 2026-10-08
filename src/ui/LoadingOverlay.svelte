@@ -1,9 +1,13 @@
 <script>
-  import { status, booted, activeVersion } from './stores.js';
+  import { status, booted, activeDemo } from './stores.js';
   import { ADMIN_USERNAME, ADMIN_PASSWORD, ADMIN_PATH } from '../admin-credentials.mjs';
 
+  // Demos packaged elsewhere may ship their own admin login (demo.json "admin").
+  $: adminUser = ($activeDemo && $activeDemo.admin && $activeDemo.admin.username) || ADMIN_USERNAME;
+  $: adminPassword = ($activeDemo && $activeDemo.admin && $activeDemo.admin.password) || ADMIN_PASSWORD;
+
   const STEPS = [
-    { label: 'Loading version manifest', match: ['manifest'] },
+    { label: 'Loading demo index', match: ['demo index', 'demo manifest'] },
     { label: 'Registering service worker', match: ['service worker'] },
     {
       label: 'Booting PHP + MariaDB engine',
@@ -44,7 +48,10 @@
         </button>
       {:else}
         <div class="boot-spinner" aria-hidden="true"></div>
-        <h2>Starting Shopware {$activeVersion || ''}</h2>
+        <h2>Starting {$activeDemo ? $activeDemo.label : 'Shopware'}</h2>
+        {#if $activeDemo && $activeDemo.shopware && !$activeDemo.label.includes($activeDemo.shopware)}
+          <p class="boot-sub">Shopware {$activeDemo.shopware}</p>
+        {/if}
         <p class="boot-status">{$status}</p>
         <ol class="boot-steps">
           {#each STEPS as step, i (step.label)}
@@ -59,11 +66,11 @@
         </p>
         <div class="boot-creds">
           <span class="boot-creds-title">Admin login ({ADMIN_PATH})</span>
-          <button type="button" class="cred" title="Copy username" on:click={() => copy(ADMIN_USERNAME, 'u')}>
-            user <code>{ADMIN_USERNAME}</code>{copied === 'u' ? ' ✓' : ''}
+          <button type="button" class="cred" title="Copy username" on:click={() => copy(adminUser, 'u')}>
+            user <code>{adminUser}</code>{copied === 'u' ? ' ✓' : ''}
           </button>
-          <button type="button" class="cred" title="Copy password" on:click={() => copy(ADMIN_PASSWORD, 'p')}>
-            password <code>{ADMIN_PASSWORD}</code>{copied === 'p' ? ' ✓' : ''}
+          <button type="button" class="cred" title="Copy password" on:click={() => copy(adminPassword, 'p')}>
+            password <code>{adminPassword}</code>{copied === 'p' ? ' ✓' : ''}
           </button>
         </div>
       {/if}

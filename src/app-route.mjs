@@ -1,40 +1,16 @@
 /**
+ * Path classification shared by the service worker, the static hosts
+ * (serve.mjs, vite, the Cloudflare Worker) and the shell.
+ */
+import { DEMO_QUERY_PARAM, DEMOS_INDEX_PATH, DEMOS_PATH_PREFIX, isDemoAssetPath } from './demo.mjs';
+
+export { DEMO_ASSET_PREFIXES, demoAssetUrl, isDemoAssetPath } from './demo.mjs';
+
+/**
  * Real static assets. Do not treat SEO suffixes like SWDEMO10007.1 as files.
  */
 const STATIC_FILE_EXT =
   /\.(?:html?|js|mjs|cjs|css|json|map|wasm|svg|png|jpe?g|gif|webp|ico|avif|woff2?|ttf|otf|eot|zip|gz|dat|so|la|txt|xml|webmanifest)$/i;
-
-/**
- * Shopware storefront/admin assets that live per version under
- * /versions/<v>/assets/... The service worker rewrites these paths so each
- * booted Shopware version gets its own compiled theme/media/bundles.
- */
-export const VERSIONED_ASSET_PREFIXES = ['/bundles/', '/theme/', '/media/', '/thumbnail/'];
-
-export function isVersionedAssetPath(pathname) {
-  return VERSIONED_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix));
-}
-
-export function versionedAssetPath(pathname, version) {
-  if (!version || !isVersionedAssetPath(pathname)) return null;
-  return '/versions/' + encodeURIComponent(version) + '/assets' + pathname;
-}
-
-/** The shell marks the active Shopware version in a cookie so the service
- * worker can route asset requests statelessly. */
-export const VERSION_COOKIE = 'sw_playground_version';
-
-export function versionFromCookieHeader(header) {
-  if (!header) return '';
-  for (const part of String(header).split(';')) {
-    const eq = part.indexOf('=');
-    if (eq === -1) continue;
-    if (part.slice(0, eq).trim() === VERSION_COOKIE) {
-      return decodeURIComponent(part.slice(eq + 1).trim());
-    }
-  }
-  return '';
-}
 
 /**
  * Paths the static host should serve as files vs. PHP front-controller routes.
@@ -42,16 +18,16 @@ export function versionFromCookieHeader(header) {
 export function isStaticPlaygroundPath(pathname) {
   if (
     pathname.startsWith('/mariadb/') ||
-    pathname.startsWith('/versions/') ||
+    pathname.startsWith(DEMOS_PATH_PREFIX) ||
     pathname.startsWith('/assets/') ||
     pathname.startsWith('/php/') ||
     pathname.startsWith('/src/') ||
     pathname.startsWith('/node_modules/') ||
-    isVersionedAssetPath(pathname) ||
+    isDemoAssetPath(pathname) ||
     pathname === '/app.js' ||
     pathname === '/browser-worker.js' ||
     pathname === '/service-worker.js' ||
-    pathname === '/versions.json'
+    pathname === DEMOS_INDEX_PATH
   ) {
     return true;
   }
@@ -71,9 +47,9 @@ export function isEngineBypassPath(pathname) {
     pathname === '/app.js' ||
     pathname === '/browser-worker.js' ||
     pathname === '/service-worker.js' ||
-    pathname === '/versions.json' ||
+    pathname === DEMOS_INDEX_PATH ||
     pathname.startsWith('/mariadb/') ||
-    pathname.startsWith('/versions/') ||
+    pathname.startsWith(DEMOS_PATH_PREFIX) ||
     pathname.startsWith('/assets/') ||
     pathname.startsWith('/php/') ||
     pathname.startsWith('/src/') ||
@@ -106,10 +82,17 @@ export function isShopwarePhpPath(pathname, nested = false) {
   return true;
 }
 
-export function initialShopwarePath() {
-  if (typeof location === 'undefined') return '/';
-  const path = location.pathname + location.search;
-  if (path === '/' || path === '') return '/';
-  if (isStaticPlaygroundPath(location.pathname)) return '/';
-  return path;
+/**
+ * The Shopware path to open on boot, derived from the shell's own URL.
+ * Playground-only query parameters (?demo=) are stripped so they never reach
+ * Shopware.
+ */
+export function initialShopwarePath(loc = typeof location === 'undefined' ? null : location) {
+  if (!loc) return '/';
+  const pathname = loc.pathname || '/';
+  if (pathname === '/' || pathname === '' || isStaticPlaygroundPath(pathname)) return '/';
+  const params = new URLSearchParams(loc.search || '');
+  params.delete(DEMO_QUERY_PARAM);
+  const search = params.toString();
+  return pathname + (search ? '?' + search : '');
 }

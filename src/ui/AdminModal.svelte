@@ -1,9 +1,13 @@
 <script>
-  import { ready } from './stores.js';
+  import { ready, activeDemo } from './stores.js';
   import { navigateTo } from './playground.js';
   import { ADMIN_USERNAME, ADMIN_PASSWORD, ADMIN_PATH } from '../admin-credentials.mjs';
 
   export let open = false;
+
+  // Demos packaged elsewhere may ship their own admin login (demo.json "admin").
+  $: adminUser = ($activeDemo && $activeDemo.admin && $activeDemo.admin.username) || ADMIN_USERNAME;
+  $: adminPassword = ($activeDemo && $activeDemo.admin && $activeDemo.admin.password) || ADMIN_PASSWORD;
 
   let copied = '';
   function copy(value, which) {
@@ -44,15 +48,15 @@
       <div class="adminmodal-body">
         <div class="credrow">
           <span class="credlabel">Username</span>
-          <code>{ADMIN_USERNAME}</code>
-          <button type="button" on:click={() => copy(ADMIN_USERNAME, 'u')}>
+          <code>{adminUser}</code>
+          <button type="button" on:click={() => copy(adminUser, 'u')}>
             {copied === 'u' ? 'Copied ✓' : 'Copy'}
           </button>
         </div>
         <div class="credrow">
           <span class="credlabel">Password</span>
-          <code>{ADMIN_PASSWORD}</code>
-          <button type="button" on:click={() => copy(ADMIN_PASSWORD, 'p')}>
+          <code>{adminPassword}</code>
+          <button type="button" on:click={() => copy(adminPassword, 'p')}>
             {copied === 'p' ? 'Copied ✓' : 'Copy'}
           </button>
         </div>

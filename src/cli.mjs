@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 /**
- * playground — CLI for preparing, snapshotting and baking playground states.
+ * playground — CLI for preparing, snapshotting, baking and publishing demos.
  *
- * Typical flow:
+ * Typical local flow:
  *   playground run                       # click the shop together locally
  *   playground console plugin:refresh    # or script it (bin/console, PHP, SQL)
  *   playground snapshot create my-shop   # freeze the database
  *   playground snapshot restore my-shop  # …and go back later
- *   playground bake my-shop              # make it the seed dump + rebuild bundle
+ *   playground bake my-shop              # make it the seed dump + rebuild the demo
+ *
+ * CI flow (package a plugin into a demo and publish it):
+ *   playground demo pack ./shopware --out ./demo --id frosh-tools-pr-12 --plugin FroshTools
+ *   playground demo upload ./demo        # → https://playground.fos.gg/?demo=frosh-tools-pr-12
  *
  * Snapshot/restore/sql talk to the MariaDB datadir directly (no PHP boot),
  * so they finish in seconds. Stop `playground run` before restoring.
@@ -20,7 +24,9 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import { Lite4MariaDB, SHOPWARE_VERSION, createPlayground } from './runtime.mjs';
 import { dumpDatabase, importDump, rewriteShopUrls } from './sql-dump.mjs';
 import { runShopwareConsole } from './frontend-assets.mjs';
-import { versionDumpPath } from './shopware-version.mjs';
+import { demoDumpPath } from './demo-build.mjs';
+import { packDemo } from './pack-demo.mjs';
+import { uploadDemo } from './upload-demo.mjs';
 
 const playgroundRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_SNAPSHOTS_DIR = join(playgroundRoot, 'snapshots');
@@ -295,11 +301,11 @@ async function cmdBake(args) {
   if (!name) fail('usage: playground bake <name> — make snapshot the seed dump for Shopware ' + SHOPWARE_VERSION);
   const { gz } = snapshotPaths(name, DEFAULT_SNAPSHOTS_DIR);
   if (!existsSync(gz)) fail('snapshot not found: ' + name);
-  const target = versionDumpPath(join(playgroundRoot, 'public'), SHOPWARE_VERSION);
+  const target = demoDumpPath(join(playgroundRoot, 'public'), SHOPWARE_VERSION);
   mkdirSync(dirname(target), { recursive: true });
   copyFileSync(gz, target);
   console.log('seed dump for Shopware ' + SHOPWARE_VERSION + ' ← snapshot "' + name + '"');
-  console.log('rebuilding bundle (FORCE_ZIP=1 npm run build)…');
+  console.log('rebuilding demo (FORCE_ZIP=1 npm run build)…');
   const r = spawnSync('npm', ['run', 'build'], {
     stdio: 'inherit',
     cwd: playgroundRoot,
@@ -307,6 +313,75 @@ async function cmdBake(args) {
   });
   if (r.status !== 0) process.exit(r.status ?? 1);
   console.log('baked. Deploy with: npm run deploy:cf');
+}
+
+/* ----------------------------------------------------------------- demos */
+
+/** `--key value`, `--key=value`, repeatable `--plugin`; positionals collected. */
+function parseFlags(argv, { repeat = [] } = {}) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a.startsWith('--')) {
+      positional.push(a);
+      continue;
+    }
+    let key = a.slice(2);
+    let value = true;
+    const eq = key.indexOf('=');
+    if (eq !== -1) {
+      value = key.slice(eq + 1);
+      key = key.slice(0, eq);
+    } else if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) {
+      value = argv[++i];
+    }
+    if (repeat.includes(key)) {
+      (flags[key] ||= []).push(value);
+    } else {
+      flags[key] = value;
+    }
+  }
+  return { flags, positional };
+}
+
+async function cmdDemoPack(args) {
+  const { flags, positional } = parseFlags(args, { repeat: ['plugin'] });
+  const shopwareDir = positional[0] || flags['shopware-dir'];
+  if (!shopwareDir || !flags.out) {
+    fail(
+      'usage: playground demo pack <shopware-dir> --out <dir> [--id <id>] [--label "<text>"] [--plugin <Name|path>]... [--reuse-install]'
+    );
+  }
+  const { outDir, manifest } = await packDemo({
+    shopwareDir,
+    outDir: String(flags.out),
+    id: flags.id ? String(flags.id) : undefined,
+    label: flags.label ? String(flags.label) : undefined,
+    plugins: flags.plugin || [],
+    reuseInstall: Boolean(flags['reuse-install']),
+    log: (msg) => console.log('[' + new Date().toISOString() + '] ' + msg),
+  });
+  console.log('packed demo "' + manifest.label + '" (id ' + manifest.id + ') → ' + outDir);
+  console.log('publish with: playground demo upload ' + outDir);
+}
+
+async function cmdDemoUpload(args) {
+  const { flags, positional } = parseFlags(args);
+  const dir = positional[0];
+  if (!dir) fail('usage: playground demo upload <demo-dir> [--name <name>] [--force]');
+  const result = await uploadDemo({
+    dir,
+    name: flags.name ? String(flags.name) : undefined,
+    force: Boolean(flags.force),
+  });
+  console.log(
+    'uploaded demo "' + result.name + '" (' + result.uploaded + ' objects, ' + result.skipped + ' unchanged)'
+  );
+  console.log('open: ' + result.url);
+  if (process.env.GITHUB_OUTPUT) {
+    writeFileSync(process.env.GITHUB_OUTPUT, 'name=' + result.name + '\nurl=' + result.url + '\n', { flag: 'a' });
+  }
 }
 
 /* -------------------------------------------------------------- dispatch */
@@ -328,9 +403,17 @@ Usage: node src/cli.mjs <command> …
   snapshot delete <name>           delete a snapshot
 
   bake <name>                      make snapshot the seed dump for Shopware ${SHOPWARE_VERSION},
-                                   rebuild the version bundle (zip + manifest seed)
+                                   rebuild the built-in demo (zip + demo.json seed)
 
-Snapshots are database-only; baked bundles also refresh files via the zip.
+  demo pack <shopware-dir>         install the tree under PHP WASM and package it as a demo
+    --out <dir> [--id <id>]          (demo.json + shopware.zip + shopware.sql.gz + assets/)
+    [--label "<text>"]
+    [--plugin <Name|path>]...        install + activate plugins (custom/plugins/<Name>, vendor/x/y)
+    [--reuse-install]                keep an existing dump in --out, only repackage
+  demo upload <demo-dir>           publish a packed demo to R2 → https://playground.fos.gg/?demo=<name>
+    [--name <name>] [--force]        (needs CF_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY)
+
+Snapshots are database-only; baked demos also refresh files via the zip.
 Stop "playground run" before snapshot restore (single datadir access).`);
 }
 
@@ -361,6 +444,16 @@ async function main() {
     // unreachable
     case 'bake':
       return cmdBake(args);
+    case 'demo':
+      switch (args[0]) {
+        case 'pack':
+          return cmdDemoPack(args.slice(1));
+        case 'upload':
+          return cmdDemoUpload(args.slice(1));
+        default:
+          fail('usage: playground demo <pack|upload>');
+      }
+    // unreachable
     case undefined:
     case 'help':
     case '--help':

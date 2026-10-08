@@ -8,10 +8,9 @@ import {
   isStaticPlaygroundPath,
   isEngineBypassPath,
   isShopwarePhpPath,
-  isVersionedAssetPath,
-  versionedAssetPath,
-  versionFromCookieHeader,
-  VERSION_COOKIE,
+  isDemoAssetPath,
+  demoAssetUrl,
+  initialShopwarePath,
 } from '../src/app-route.mjs';
 import {
   createRequestLog,
@@ -51,8 +50,9 @@ test('playground page is browser ESM (no Node require/module load path)', () => 
   assert.match(shell, /frameEl\.src/);
   assert.doesNotMatch(shell, /from 'node:/);
   // toolbar features
-  assert.match(shell, /versions\.json/, 'shell loads the version manifest');
-  assert.match(shell, /VERSION_COOKIE/);
+  assert.match(shell, /DEMOS_INDEX_PATH/, 'shell loads the demo index');
+  assert.match(shell, /DEMO_QUERY_PARAM/, 'shell opens demos from ?demo=');
+  assert.match(shell, /sw-playground-demo/, 'shell pushes the demo assets base to the SW');
   assert.match(shell, /type: 'export'/);
   assert.match(shell, /type: 'reset'/);
 
@@ -100,7 +100,8 @@ test('playground page is browser ESM (no Node require/module load path)', () => 
   assert.match(sw, /addEventListener\('fetch'/);
   assert.match(sw, /phpViaPage/);
   assert.match(sw, /isShopwarePhpPath/);
-  assert.match(sw, /versionedAssetPath/, 'SW rewrites assets to the active version');
+  assert.match(sw, /demoAssetUrl/, 'SW rewrites assets to the active demo');
+  assert.match(sw, /sw-playground-demo-query/);
   assert.doesNotMatch(sw, /from 'node:/);
 
   const browserRt = readFileSync(join(root, 'src/browser-runtime.mjs'), 'utf8');
@@ -150,8 +151,9 @@ test('installed shop and dump paths are routed correctly', () => {
   assert.equal(isPhpAppRoute('/'), false);
   assert.equal(isPhpAppRoute('/installer'), true);
   assert.equal(isStaticPlaygroundPath('/app.js'), true);
-  assert.equal(isStaticPlaygroundPath('/versions.json'), true);
-  assert.equal(isStaticPlaygroundPath('/versions/6.7.13.1/shopware.sql.gz'), true);
+  assert.equal(isStaticPlaygroundPath('/demos.json'), true);
+  assert.equal(isStaticPlaygroundPath('/demos/6.7.13.1/shopware.sql.gz'), true);
+  assert.equal(isStaticPlaygroundPath('/demos/frosh-tools-pr-12/demo.json'), true);
   assert.equal(isStaticPlaygroundPath('/service-worker.js'), true);
   assert.equal(isStaticPlaygroundPath('/bundles/storefront/storefront/shopware/shopware.js'), true);
   assert.equal(isStaticPlaygroundPath('/theme/abc/css/all.css'), true);
@@ -169,7 +171,8 @@ test('installed shop and dump paths are routed correctly', () => {
   );
   assert.equal(isEngineBypassPath('/browser-worker.js'), true);
   assert.equal(isEngineBypassPath('/mariadb/index.mjs'), true);
-  assert.equal(isEngineBypassPath('/versions/6.7.13.1/shopware.zip'), true);
+  assert.equal(isEngineBypassPath('/demos/6.7.13.1/shopware.zip'), true);
+  assert.equal(isEngineBypassPath('/demos.json'), true);
   assert.equal(isShopwarePhpPath('/', false), false);
   assert.equal(isShopwarePhpPath('/', true), true);
   assert.equal(isShopwarePhpPath('/index.php', false), true);
@@ -183,26 +186,32 @@ test('installed shop and dump paths are routed correctly', () => {
   assert.equal(isShopwarePhpPath('/theme/abc/css/all.css', true), false);
 });
 
-test('versioned asset routing rewrites theme/media/bundles to the version bundle', () => {
-  assert.equal(isVersionedAssetPath('/theme/abc/css/all.css'), true);
-  assert.equal(isVersionedAssetPath('/media/x/y.png'), true);
-  assert.equal(isVersionedAssetPath('/bundles/storefront/a.js'), true);
-  assert.equal(isVersionedAssetPath('/index.php'), false);
+test('demo asset routing rewrites theme/media/bundles to the demo assets base', () => {
+  assert.equal(isDemoAssetPath('/theme/abc/css/all.css'), true);
+  assert.equal(isDemoAssetPath('/media/x/y.png'), true);
+  assert.equal(isDemoAssetPath('/bundles/storefront/a.js'), true);
+  assert.equal(isDemoAssetPath('/index.php'), false);
 
   assert.equal(
-    versionedAssetPath('/theme/abc/css/all.css', '6.7.13.1'),
-    '/versions/6.7.13.1/assets/theme/abc/css/all.css'
+    demoAssetUrl('/theme/abc/css/all.css', 'https://playground.fos.gg/demos/6.7.13.1/assets'),
+    'https://playground.fos.gg/demos/6.7.13.1/assets/theme/abc/css/all.css'
   );
-  assert.equal(versionedAssetPath('/index.php', '6.7.13.1'), null);
-  assert.equal(versionedAssetPath('/theme/abc/css/all.css', ''), null);
-
   assert.equal(
-    versionFromCookieHeader('a=1; ' + VERSION_COOKIE + '=6.6.10.23; b=2'),
-    '6.6.10.23'
+    demoAssetUrl('/bundles/a.js', 'https://cdn.example.com/demo/assets/'),
+    'https://cdn.example.com/demo/assets/bundles/a.js',
+    'trailing slash on the base is tolerated'
   );
-  assert.equal(versionFromCookieHeader(''), '');
-  assert.equal(versionFromCookieHeader(null), '');
-  assert.equal(versionFromCookieHeader('other=1'), '');
+  assert.equal(demoAssetUrl('/index.php', 'https://x/assets'), null);
+  assert.equal(demoAssetUrl('/theme/abc/css/all.css', ''), null);
+});
+
+test('initial Shopware path strips the playground demo parameter', () => {
+  const loc = (pathname, search) => ({ pathname, search });
+  assert.equal(initialShopwarePath(loc('/', '?demo=foo')), '/');
+  assert.equal(initialShopwarePath(loc('/admin', '?demo=foo')), '/admin');
+  assert.equal(initialShopwarePath(loc('/search', '?search=shirt&demo=foo')), '/search?search=shirt');
+  assert.equal(initialShopwarePath(loc('/app.js', '')), '/');
+  assert.equal(initialShopwarePath(null), '/');
 });
 
 test('fs-rpc confines paths to the Shopware tree', () => {

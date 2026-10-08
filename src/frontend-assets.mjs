@@ -24,6 +24,20 @@ export function copyBundlePublicAssets(shopwareRoot) {
   }
 }
 
+/**
+ * assets:install for one plugin: src/Resources/public → public/bundles/<name>
+ * (Shopware lowercases the bundle name, e.g. FroshTools → bundles/froshtools).
+ */
+export function copyPluginPublicAssets(shopwareRoot, pluginDir, pluginName) {
+  const from = join(pluginDir, 'src/Resources/public');
+  if (!existsSync(from)) return false;
+  const to = join(shopwareRoot, 'public/bundles', String(pluginName).toLowerCase());
+  rmSync(to, { recursive: true, force: true });
+  mkdirSync(join(shopwareRoot, 'public/bundles'), { recursive: true });
+  cpSync(from, to, { recursive: true });
+  return true;
+}
+
 function phpString(value) {
   return "'" + String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
 }

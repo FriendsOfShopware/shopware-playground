@@ -7,7 +7,7 @@
  * fs-list/fs-read/fs-write (file editor), logs (request log + var/log tails).
  */
 import { createPlayground } from './browser-runtime.mjs';
-import { idbNamesForVersion } from './idb-names.mjs';
+import { idbBelongsToDemo, idbNamesForDemo } from './idb-names.mjs';
 import { buildExportZip } from './export.mjs';
 import {
   collectLogs,
@@ -18,7 +18,9 @@ import {
 } from './fs-rpc.mjs';
 
 let playground;
-let activeVersion = '';
+/** Storage key of the booted demo (IndexedDB suffix), see src/demo.mjs. */
+let activeKey = '';
+let activeDemoId = '';
 const requestLog = createRequestLog();
 
 self.addEventListener('unhandledrejection', (event) => {
@@ -42,15 +44,11 @@ async function resetStorage() {
   } catch {
     /* already tearing down */
   }
-  const candidates = new Set(idbNamesForVersion(activeVersion));
+  const candidates = new Set(idbNamesForDemo(activeKey));
   try {
     for (const info of await indexedDB.databases()) {
-      if (info.name && info.name.includes('shopware-playground')) {
-        // Only wipe the active version; other versions keep their state.
-        if (!activeVersion || info.name.endsWith(activeVersion)) {
-          candidates.add(info.name);
-        }
-      }
+      // Only wipe the active demo; other demos keep their state.
+      if (idbBelongsToDemo(info.name, activeKey)) candidates.add(info.name);
     }
   } catch {
     /* indexedDB.databases() unsupported: the explicit names still apply */
@@ -78,11 +76,12 @@ async function handleMessage(event) {
   const id = msg.id;
   try {
     if (msg.type === 'boot') {
-      activeVersion = msg.version || '';
+      activeKey = msg.storageKey || '';
+      activeDemoId = msg.demoId || '';
       self.postMessage({ id, type: 'status', text: 'Starting MariaDB WASM + PHP WASM…' });
       playground = await createPlayground({
         absoluteUrl: msg.origin || self.location.origin,
-        version: activeVersion,
+        storageKey: activeKey,
         zipUrl: msg.zipUrl,
         dumpUrl: msg.dumpUrl,
       });
@@ -139,7 +138,7 @@ async function handleMessage(event) {
     if (msg.type === 'export') {
       self.postMessage({ id, type: 'status', text: 'Building export zip…' });
       const bytes = await buildExportZip(playground, {
-        version: activeVersion,
+        demo: activeDemoId,
         absoluteUrl: msg.origin || self.location.origin,
       });
       const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);

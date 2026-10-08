@@ -6,17 +6,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../worker/index.mjs';
 
-const VERSIONS_JSON = JSON.stringify({
+const DEMOS_JSON = JSON.stringify({
   default: '6.7.13.1',
-  versions: [{ id: '6.7.13.1' }, { id: '6.6.10.23' }],
+  demos: [{ id: '6.7.13.1' }, { id: '6.6.10.23' }],
 });
 
 function makeEnv() {
   const r2 = new Map([
-    ['versions.json', { body: VERSIONS_JSON, contentType: 'application/json' }],
+    ['demos.json', { body: DEMOS_JSON, contentType: 'application/json' }],
     ['mariadb/index.mjs', { body: 'ENGINE', contentType: 'text/javascript' }],
-    ['versions/6.7.13.1/shopware.zip', { body: 'ZIP67', contentType: 'application/zip' }],
-    ['versions/6.7.13.1/assets/bundles/foo/bar.css', { body: 'CSS', contentType: 'text/css' }],
+    ['demos/6.7.13.1/shopware.zip', { body: 'ZIP67', contentType: 'application/zip' }],
+    ['demos/6.7.13.1/assets/bundles/foo/bar.css', { body: 'CSS', contentType: 'text/css' }],
+    ['demos/frosh-tools-pr-12/demo.json', { body: '{"id":"frosh-tools-pr-12"}', contentType: 'application/json' }],
     ['php/auto_prepend.php', { body: '<?php', contentType: 'application/x-httpd-php' }],
   ]);
   const assets = new Map([
@@ -100,7 +101,7 @@ test('service-worker.js gets Service-Worker-Allowed', async () => {
 
 test('heavy payloads come from R2 with stored content type', async () => {
   const { env } = makeEnv();
-  const zip = await get(env, '/versions/6.7.13.1/shopware.zip');
+  const zip = await get(env, '/demos/6.7.13.1/shopware.zip');
   assert.equal(zip.status, 200);
   assert.equal(await zip.text(), 'ZIP67');
   assert.equal(zip.headers.get('Content-Type'), 'application/zip');
@@ -108,32 +109,37 @@ test('heavy payloads come from R2 with stored content type', async () => {
   const engine = await get(env, '/mariadb/index.mjs');
   assert.equal(await engine.text(), 'ENGINE');
 
-  const manifest = await get(env, '/versions.json');
-  assert.equal(manifest.headers.get('Content-Type'), 'application/json');
-  assert.equal(JSON.parse(await manifest.text()).default, '6.7.13.1');
+  const index = await get(env, '/demos.json');
+  assert.equal(index.headers.get('Content-Type'), 'application/json');
+  assert.equal(JSON.parse(await index.text()).default, '6.7.13.1');
+
+  // Demos uploaded by CI share the demos/ prefix.
+  const hosted = await get(env, '/demos/frosh-tools-pr-12/demo.json');
+  assert.equal(hosted.status, 200);
+  assert.equal(JSON.parse(await hosted.text()).id, 'frosh-tools-pr-12');
 
   const prepend = await get(env, '/php/auto_prepend.php');
   assert.equal(await prepend.text(), '<?php');
 });
 
-test('versioned asset prefixes fall back to the default version in R2', async () => {
+test('Shopware asset prefixes fall back to the default demo in R2', async () => {
   const { env, requests } = makeEnv();
   const res = await get(env, '/bundles/foo/bar.css');
   assert.equal(res.status, 200);
   assert.equal(await res.text(), 'CSS');
-  assert.ok(requests.r2.includes('versions/6.7.13.1/assets/bundles/foo/bar.css'));
+  assert.ok(requests.r2.includes('demos/6.7.13.1/assets/bundles/foo/bar.css'));
 });
 
 test('R2 miss is a 404 with isolation headers', async () => {
   const { env } = makeEnv();
-  const res = await get(env, '/versions/9.9.9/shopware.zip');
+  const res = await get(env, '/demos/9.9.9/shopware.zip');
   assert.equal(res.status, 404);
   assert.equal(res.headers.get('Cross-Origin-Embedder-Policy'), 'require-corp');
 });
 
 test('HEAD reads object metadata without a body', async () => {
   const { env } = makeEnv();
-  const res = await get(env, '/versions/6.7.13.1/shopware.zip', 'HEAD');
+  const res = await get(env, '/demos/6.7.13.1/shopware.zip', 'HEAD');
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('Content-Length'), '5');
   assert.equal(await res.text(), '');
@@ -141,6 +147,6 @@ test('HEAD reads object metadata without a body', async () => {
 
 test('non-GET methods are rejected', async () => {
   const { env } = makeEnv();
-  const res = await get(env, '/versions.json', 'POST');
+  const res = await get(env, '/demos.json', 'POST');
   assert.equal(res.status, 405);
 });

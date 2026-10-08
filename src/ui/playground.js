@@ -1,14 +1,28 @@
 /**
  * Framework-agnostic playground shell logic: worker RPC, service-worker
- * bridge, version manifest, boot sequence, export/reset. UI state is
+ * bridge, demo selection, boot sequence, export/reset. UI state is
  * published through the Svelte stores in stores.js.
+ *
+ * Demo selection (see src/demo.mjs): `?demo=<id|name|url>` wins, then the
+ * last choice stored in localStorage, then the index default.
  */
-import { initialShopwarePath, VERSION_COOKIE } from '../app-route.mjs';
-import { idbNamesForVersion } from '../idb-names.mjs';
-import { status, ready, booted, versions, activeVersion } from './stores.js';
+import { initialShopwarePath } from '../app-route.mjs';
+import {
+  DEMO_QUERY_PARAM,
+  DEMOS_INDEX_PATH,
+  absoluteUrl,
+  parseDemoRef,
+  resolveDemo,
+  storageKeyFor,
+} from '../demo.mjs';
+import { idbBelongsToDemo, idbNamesForDemo } from '../idb-names.mjs';
+import { status, ready, booted, demos, activeDemo } from './stores.js';
+
+const STORED_DEMO_KEY = 'sw-playground-demo';
 
 let worker;
-let currentVersion = '';
+let currentDemo = null;
+let knownIndexIds = [];
 let frameEl;
 
 export function setFrame(el) {
@@ -89,9 +103,13 @@ async function registerServiceWorker() {
   });
 }
 
-function pushVersionToServiceWorker() {
+function assetsBaseOf(demo) {
+  return demo ? absoluteUrl(demo.assets, location.origin) : '';
+}
+
+function pushDemoToServiceWorker() {
   const post = (sw) =>
-    sw && sw.postMessage({ type: 'sw-playground-version', version: currentVersion });
+    sw && sw.postMessage({ type: 'sw-playground-demo', assetsBase: assetsBaseOf(currentDemo) });
   if (navigator.serviceWorker.controller) {
     post(navigator.serviceWorker.controller);
   } else {
@@ -100,16 +118,14 @@ function pushVersionToServiceWorker() {
 }
 
 function attachServiceWorkerBridge() {
-  navigator.serviceWorker.addEventListener('controllerchange', () =>
-    pushVersionToServiceWorker()
-  );
+  navigator.serviceWorker.addEventListener('controllerchange', () => pushDemoToServiceWorker());
   navigator.serviceWorker.addEventListener('message', async (event) => {
     const data = event.data || {};
     const port = event.ports && event.ports[0];
-    // The SW cannot see Cookie headers; it asks the page for the active
-    // version when it needs to rewrite theme/media/bundles asset paths.
-    if (data.type === 'sw-playground-version-query') {
-      if (port) port.postMessage({ version: currentVersion });
+    // A restarted SW has no state; it asks the page where the active demo's
+    // theme/media/bundles live before rewriting asset requests.
+    if (data.type === 'sw-playground-demo-query') {
+      if (port) port.postMessage({ assetsBase: assetsBaseOf(currentDemo) });
       return;
     }
     if (data.type !== 'php-request' || !port) return;
@@ -126,35 +142,141 @@ function attachServiceWorkerBridge() {
   });
 }
 
-/* ---------------------------------------------------------------- versions */
+/* ------------------------------------------------------------------ demos */
 
-async function loadVersions() {
-  const res = await fetch('/versions.json');
+async function loadDemoIndex() {
+  const res = await fetch(DEMOS_INDEX_PATH);
   if (!res.ok) {
-    throw new Error('versions.json missing; run npm run build');
+    throw new Error('demos.json missing; run npm run build');
   }
-  const manifest = await res.json();
-  const list = Array.isArray(manifest.versions) ? manifest.versions : [];
+  const index = await res.json();
+  const list = (Array.isArray(index.demos) ? index.demos : []).map((entry) =>
+    resolveDemo(entry, DEMOS_INDEX_PATH, { source: 'index' })
+  );
   if (!list.length) {
-    throw new Error('versions.json lists no Shopware versions; run npm run build');
+    throw new Error('demos.json lists no demos; run npm run build');
   }
-  const stored = localStorage.getItem('sw-playground-version');
-  const active = list.some((v) => v.id === stored)
-    ? stored
-    : manifest.default || list[0].id;
-  return { list, active };
+  const fallback = list.some((d) => d.id === index.default) ? index.default : list[0].id;
+  return { list, fallback };
 }
 
-export function selectVersion(version) {
-  localStorage.setItem('sw-playground-version', version);
-  document.cookie = VERSION_COOKIE + '=' + encodeURIComponent(version) + '; path=/; SameSite=Strict';
+function storedDemoRef() {
+  try {
+    return localStorage.getItem(STORED_DEMO_KEY) || '';
+  } catch {
+    return '';
+  }
 }
 
-export function switchVersion(next) {
-  if (!next || next === currentVersion) return;
-  selectVersion(next);
-  setStatus('Switching to Shopware ' + next + '…');
-  location.reload();
+function requestedDemoRef() {
+  return new URLSearchParams(location.search).get(DEMO_QUERY_PARAM) || '';
+}
+
+async function fetchDemo(ref) {
+  const res = await fetch(ref.url);
+  if (!res.ok) {
+    throw new Error(
+      (ref.kind === 'hosted' ? 'Demo "' + ref.id + '" not found' : 'Demo manifest not reachable') +
+        ' (HTTP ' + res.status + ' for ' + ref.url + ')'
+    );
+  }
+  let raw;
+  try {
+    raw = await res.json();
+  } catch {
+    throw new Error('Demo manifest at ' + ref.url + ' is not JSON');
+  }
+  return resolveDemo(raw, ref.url, { source: ref.kind, storageKey: storageKeyFor(ref) });
+}
+
+/**
+ * Pick the demo to boot. A bad `?demo=` or a stale stored selection falls
+ * back to the index default instead of leaving the page unusable.
+ */
+async function chooseDemo(index) {
+  const indexIds = index.list.map((d) => d.id);
+  const candidates = [
+    { value: requestedDemoRef(), from: 'url' },
+    { value: storedDemoRef(), from: 'stored' },
+  ].filter((c) => c.value);
+  for (const candidate of candidates) {
+    let ref;
+    try {
+      ref = parseDemoRef(candidate.value, indexIds);
+      if (ref.kind === 'index') {
+        return { demo: index.list.find((d) => d.id === ref.id), ref: candidate.value };
+      }
+      // A remote demo runs third-party PHP/JS inside this origin's iframe.
+      // Links can be shared by anyone, so a remote host is only booted after
+      // the visitor confirms it (stored refs were confirmed earlier).
+      const confirmedBefore = candidate.value === storedDemoRef();
+      if (ref.kind === 'remote' && candidate.from === 'url' && !confirmedBefore && !confirmRemoteDemo(ref.url)) {
+        return { demo: index.list.find((d) => d.id === index.fallback), ref: '' };
+      }
+      return { demo: await fetchDemo(ref), ref: candidate.value };
+    } catch (err) {
+      if (candidate.from === 'url') throw err;
+      // stored selection no longer resolves (demo removed): forget it
+      try {
+        localStorage.removeItem(STORED_DEMO_KEY);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return { demo: index.list.find((d) => d.id === index.fallback), ref: '' };
+}
+
+function confirmRemoteDemo(url) {
+  let host = url;
+  try {
+    host = new URL(url).host;
+  } catch {
+    /* keep raw */
+  }
+  if (host === location.host) return true;
+  return confirm(
+    'Load a demo from ' + host + '?\n\n' +
+      'The playground will download and run the Shopware code and database published there.'
+  );
+}
+
+function rememberDemo(ref) {
+  try {
+    if (ref) localStorage.setItem(STORED_DEMO_KEY, ref);
+    else localStorage.removeItem(STORED_DEMO_KEY);
+  } catch {
+    /* private mode */
+  }
+}
+
+/** Keep ?demo= in the address bar for shareable non-index demos only. */
+function syncDemoInUrl(demo, ref) {
+  const url = new URL(location.href);
+  if (demo.source === 'index') url.searchParams.delete(DEMO_QUERY_PARAM);
+  else url.searchParams.set(DEMO_QUERY_PARAM, ref);
+  if (url.href !== location.href) history.replaceState(null, '', url);
+}
+
+/**
+ * Switch to another demo: an index id, a hosted demo name or a manifest URL.
+ * The page reloads — PHP WASM and MariaDB WASM cannot be re-booted in place.
+ */
+export function switchDemo(ref) {
+  const value = String(ref || '').trim();
+  if (!value) return;
+  try {
+    parseDemoRef(value, knownIndexIds);
+  } catch (err) {
+    setStatus('Error: ' + err.message);
+    return;
+  }
+  if (/^https?:\/\//i.test(value) && !confirmRemoteDemo(value)) return;
+  rememberDemo(value);
+  const url = new URL(location.href);
+  url.searchParams.set(DEMO_QUERY_PARAM, value);
+  setStatus('Switching demo…');
+  location.assign(url);
 }
 
 /* ------------------------------------------------------- export and reset */
@@ -163,7 +285,8 @@ export async function exportPlayground() {
   setStatus('Building export…');
   const res = await send({ type: 'export', origin: location.origin });
   const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
-  const name = 'shopware-playground-' + (currentVersion || 'export') + '-' + stamp + '.zip';
+  const name =
+    'shopware-playground-' + ((currentDemo && currentDemo.id) || 'export') + '-' + stamp + '.zip';
   const file = new File([res.body], name, { type: 'application/zip' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(file);
@@ -176,7 +299,6 @@ export async function exportPlayground() {
 export async function resetPlayground() {
   setStatus('Resetting database…');
   await send({ type: 'reset' });
-  localStorage.removeItem('sw-playground-version');
   setStatus('Reset done — reloading…');
   location.reload();
 }
@@ -205,14 +327,14 @@ export function navigateTo(input) {
 /* -------------------------------------------------------------------- boot */
 
 /**
- * Wipe this version's persisted database when the deployed seed dump changed
- * (or predates seed markers). Without this, a poisoned IndexedDB from an
- * older deployment is reused forever — hasShopwareSchema only checks that
- * ANY tables exist, never which dump they came from.
+ * Wipe this demo's persisted database when its seed dump changed (or
+ * predates seed markers). Without this, a stale IndexedDB from an older
+ * upload is reused forever — hasShopwareSchema only checks that ANY tables
+ * exist, never which dump they came from.
  */
-async function ensureSeedFreshness(version, seed) {
-  if (!version || !seed || typeof indexedDB === 'undefined') return;
-  const markerKey = 'sw-playground-seed-' + version;
+async function ensureSeedFreshness(storageKey, seed) {
+  if (!storageKey || !seed || typeof indexedDB === 'undefined') return;
+  const markerKey = 'sw-playground-seed-' + storageKey;
   let stored = '';
   try {
     stored = localStorage.getItem(markerKey) || '';
@@ -220,12 +342,10 @@ async function ensureSeedFreshness(version, seed) {
     return;
   }
   if (stored === seed) return;
-  const names = new Set(idbNamesForVersion(version));
+  const names = new Set(idbNamesForDemo(storageKey));
   try {
     for (const info of await indexedDB.databases()) {
-      if (info.name && info.name.endsWith('shopware-playground-' + version)) {
-        names.add(info.name);
-      }
+      if (idbBelongsToDemo(info.name, storageKey)) names.add(info.name);
     }
   } catch {
     /* enumeration unsupported: the explicit names still apply */
@@ -244,19 +364,23 @@ async function ensureSeedFreshness(version, seed) {
 }
 
 export async function boot() {
-  setStatus('Loading version manifest…');
-  const { list, active } = await loadVersions();
-  currentVersion = active;
-  selectVersion(active);
-  versions.set({ list, active });
-  activeVersion.set(active);
-  const activeEntry = list.find((v) => v.id === active) || list[0];
-  await ensureSeedFreshness(active, activeEntry && activeEntry.seed);
+  setStatus('Loading demo index…');
+  const index = await loadDemoIndex();
+  knownIndexIds = index.list.map((d) => d.id);
+  const { demo, ref } = await chooseDemo(index);
+  currentDemo = demo;
+  rememberDemo(ref);
+  syncDemoInUrl(demo, ref);
+  // Non-index demos (hosted/remote) are listed on top while they are active.
+  const list = demo.source === 'index' ? index.list : [demo, ...index.list];
+  demos.set({ list, active: demo });
+  activeDemo.set(demo);
+  await ensureSeedFreshness(demo.storageKey, demo.seed);
 
   setStatus('Registering service worker…');
   attachServiceWorkerBridge();
   await registerServiceWorker();
-  pushVersionToServiceWorker();
+  pushDemoToServiceWorker();
 
   setStatus('Starting worker…');
   worker = new Worker('/browser-worker.js', {
@@ -273,9 +397,10 @@ export async function boot() {
     type: 'boot',
     origin: location.origin,
     host: location.host,
-    version: activeEntry.id,
-    zipUrl: activeEntry.zip,
-    dumpUrl: activeEntry.dump,
+    demoId: demo.id,
+    storageKey: demo.storageKey,
+    zipUrl: absoluteUrl(demo.zip, location.origin),
+    dumpUrl: absoluteUrl(demo.dump, location.origin),
   });
 
   ready.set(true);
@@ -287,18 +412,19 @@ export async function boot() {
   if (frameEl) {
     frameEl.src = location.origin + path;
   }
-  setStatus('Opening Shopware ' + currentVersion + '…');
+  setStatus('Opening ' + demo.label + '…');
 }
 
 export function reportFrameLoaded() {
   // The iframe also fires load for its initial about:blank — only a real
   // Shopware document counts as booted.
   if (currentFramePath()) booted.set(true);
+  const label = currentDemo ? currentDemo.label : 'Shopware';
   try {
     const doc = frameEl && frameEl.contentDocument;
     const title = doc && doc.title ? doc.title : '';
-    setStatus('Shopware ' + currentVersion + ' — HTTP 200' + (title ? ' — ' + title : ''));
+    setStatus(label + ' — HTTP 200' + (title ? ' — ' + title : ''));
   } catch {
-    setStatus('Shopware ' + currentVersion + ' loaded');
+    setStatus(label + ' loaded');
   }
 }

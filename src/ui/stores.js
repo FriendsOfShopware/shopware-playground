@@ -13,11 +13,11 @@ export const ready = writable(false);
 /** First Shopware document rendered in the iframe: hides the boot overlay. */
 export const booted = writable(false);
 
-/** Manifest versions + active id. */
-export const versions = writable({ list: [], active: '' });
+/** Selectable demos (index entries + the active hosted/remote one) and the active descriptor. */
+export const demos = writable({ list: [], active: null });
 
-/** Currently booted Shopware version id. */
-export const activeVersion = writable('');
+/** Currently booted demo descriptor (see src/demo.mjs resolveDemo). */
+export const activeDemo = writable(null);
 
 /** Developer drawer visibility + active tab ('sql' | 'files' | 'logs'). */
 export const drawer = writable({ open: false, tab: 'sql' });

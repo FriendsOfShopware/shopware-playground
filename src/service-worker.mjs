@@ -2,14 +2,14 @@
  * Thin Service Worker: intercept same-origin Shopware HTTP and forward
  * PHP routes to the playground page, which owns the Dedicated Worker
  * (PHP WASM + lite4mariadb). Static assets stay on the network, but
- * theme/media/bundles are rewritten to the active version's asset dir
- * (/versions/<v>/assets/...) based on the shell's version cookie.
+ * theme/media/bundles are rewritten to the active demo's assets directory
+ * (same-origin /demos/<id>/assets/... or a CORS-enabled remote host).
  */
 import {
+  demoAssetUrl,
+  isDemoAssetPath,
   isEngineBypassPath,
   isShopwarePhpPath,
-  isVersionedAssetPath,
-  versionedAssetPath,
 } from './app-route.mjs';
 
 self.addEventListener('install', (event) => {
@@ -20,43 +20,43 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-// The Cookie header is attached after the SW fetch stage, so the active
-// version cannot be read from request headers — the shell page pushes it
-// via postMessage and answers queries instead.
-let activeVersion = '';
+// The service worker cannot read the shell's state itself — the page pushes
+// the active demo's absolute assets base URL via postMessage and answers
+// queries when the worker was (re)started without it.
+let activeAssetsBase = '';
 
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'skip-waiting') {
     self.skipWaiting();
   }
-  if (event.data && event.data.type === 'sw-playground-version') {
-    activeVersion = event.data.version || '';
+  if (event.data && event.data.type === 'sw-playground-demo') {
+    activeAssetsBase = event.data.assetsBase || '';
   }
-  if (event.data && event.data.type === 'sw-playground-version-query' && event.ports[0]) {
-    event.ports[0].postMessage({ version: activeVersion });
+  if (event.data && event.data.type === 'sw-playground-demo-query' && event.ports[0]) {
+    event.ports[0].postMessage({ assetsBase: activeAssetsBase });
   }
 });
 
-async function queryVersionFromClients() {
-  if (activeVersion) return activeVersion;
+async function queryAssetsBaseFromClients() {
+  if (activeAssetsBase) return activeAssetsBase;
   const windows = await self.clients.matchAll({
     type: 'window',
     includeUncontrolled: true,
   });
   for (const client of windows) {
     try {
-      const version = await new Promise((resolve) => {
+      const assetsBase = await new Promise((resolve) => {
         const channel = new MessageChannel();
         const timer = setTimeout(() => resolve(''), 1500);
         channel.port1.onmessage = (event) => {
           clearTimeout(timer);
-          resolve((event.data && event.data.version) || '');
+          resolve((event.data && event.data.assetsBase) || '');
         };
-        client.postMessage({ type: 'sw-playground-version-query' }, [channel.port2]);
+        client.postMessage({ type: 'sw-playground-demo-query' }, [channel.port2]);
       });
-      if (version) {
-        activeVersion = version;
-        return version;
+      if (assetsBase) {
+        activeAssetsBase = assetsBase;
+        return assetsBase;
       }
     } catch {
       // client gone — try the next one
@@ -157,18 +157,20 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith(
     (async () => {
-      // Versioned static assets: rewrite to the active version's bundle.
-      if (isVersionedAssetPath(pathname)) {
-        const version = await queryVersionFromClients();
-        const rewritten = versionedAssetPath(pathname, version);
+      // Shopware static assets: rewrite to the active demo's assets dir.
+      // Remote demos live on another origin; a plain CORS fetch (no
+      // forwarded headers → no preflight) only needs Access-Control-Allow-Origin.
+      if (isDemoAssetPath(pathname)) {
+        const assetsBase = await queryAssetsBaseFromClients();
+        const rewritten = demoAssetUrl(pathname, assetsBase);
         if (rewritten) {
-          const res = await fetch(new URL(rewritten, url).toString(), {
-            headers: request.headers,
+          const res = await fetch(rewritten, {
+            headers: { accept: request.headers.get('accept') || '*/*' },
           });
           // Re-create the response so its URL is empty: a passthrough response
-          // keeps the rewritten /versions/... URL, which browsers then use as
+          // keeps the rewritten /demos/... URL, which browsers then use as
           // the module base URL — the admin SPA would load its chunks twice
-          // (once via /bundles/, once via /versions/) and boot breaks.
+          // (once via /bundles/, once via /demos/) and boot breaks.
           return new Response(res.body, {
             status: res.status,
             statusText: res.statusText,

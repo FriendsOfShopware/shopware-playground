@@ -1,39 +1,35 @@
 #!/usr/bin/env node
 /**
  * Install Shopware once under Node PHP WASM + lite4mariadb, then dump SQL
- * into the version bundle (public/versions/<v>/shopware.sql.gz) that seeds
- * fresh browsers. The install runs on an in-memory database so versions
- * never contaminate each other's datadir.
+ * into the demo directory (public/demos/<v>/shopware.sql.gz for built-in
+ * demos) that seeds fresh browsers. The install runs on an in-memory
+ * database so demos never contaminate each other's datadir.
  *
- * Env: SHOPWARE_DIR (default ./shopware) — point at versions-src/<v>/shopware
- * to prepare another version for the toggle.
+ * CLI env: SHOPWARE_DIR (default ./shopware — point at
+ * versions-src/<v>/shopware to prepare another built-in version),
+ * PLAYGROUND_PLUGINS (comma-separated plugin names/paths to install and
+ * activate, see installShopware), FORCE_INSTALL=1 to redo an install.
+ *
+ * `installShopware()` is the reusable part; `playground demo pack` uses it
+ * to package a plugin demo for upload.
  */
-import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { createPlayground } from './runtime.mjs';
 import { dumpDatabase } from './sql-dump.mjs';
-import { copyBundlePublicAssets, runShopwareConsole } from './frontend-assets.mjs';
-import { detectShopwareVersion, updateVersionsManifest, versionDumpPath } from './shopware-version.mjs';
+import {
+  copyBundlePublicAssets,
+  copyPluginPublicAssets,
+  runShopwareConsole,
+} from './frontend-assets.mjs';
+import { demoDumpPath, detectShopwareVersion } from './demo-build.mjs';
 import { ADMIN_USERNAME, ADMIN_PASSWORD } from './admin-credentials.mjs';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const playgroundRoot = join(here, '..');
-const shopwareRoot = process.env.SHOPWARE_DIR
-  ? resolve(process.env.SHOPWARE_DIR)
-  : join(playgroundRoot, 'shopware');
-const shopwareVersion = detectShopwareVersion(shopwareRoot) || 'unknown';
-const dumpPath = versionDumpPath(join(playgroundRoot, 'public'), shopwareVersion);
-const lockPath = join(shopwareRoot, 'install.lock');
 
 const HOST = '127.0.0.1';
 const ORIGIN = 'http://127.0.0.1';
-
-function log(msg) {
-  console.log('[' + new Date().toISOString() + '] ' + msg);
-}
 
 function header(res, name) {
   const headers = res.headers || {};
@@ -44,7 +40,7 @@ function header(res, name) {
 }
 
 async function request(pg, req) {
-  const res = await pg.handleRequest({
+  return pg.handleRequest({
     method: req.method || 'GET',
     url: req.url,
     headers: {
@@ -54,7 +50,6 @@ async function request(pg, req) {
     },
     body: req.body,
   });
-  return res;
 }
 
 async function follow(pg, req, maxHops = 6) {
@@ -77,7 +72,7 @@ function form(fields) {
   return new URLSearchParams(fields).toString();
 }
 
-async function migrateAll(pg) {
+async function migrateAll(pg, log) {
   let offset = 0;
   let last = -1;
   let stuck = 0;
@@ -119,7 +114,7 @@ async function migrateAll(pg) {
   }
 }
 
-function writeEnvLocal() {
+function writeEnvLocal(shopwareRoot) {
   const body = [
     'APP_SECRET=playground-app-secret-please-change-32ch',
     'APP_URL=http://127.0.0.1',
@@ -137,51 +132,65 @@ function writeEnvLocal() {
   writeFileSync(join(shopwareRoot, '.env.local'), body);
 }
 
-function seedDemoDataPlugin(db) {
-  const existing = db.query(
-    "SELECT name FROM plugin WHERE name = 'SwagPlatformDemoData'"
-  );
+const sqlStr = (s) => "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
+const randomId = () => [...Array(32)].map(() => Math.floor(Math.random() * 16).toString(16)).join('');
+
+/**
+ * Register a plugin in the `plugin` table from its composer.json, the way
+ * plugin:refresh would — except plugin:refresh shells out to git via
+ * Composer, which PHP WASM cannot run.
+ *
+ * @param {{ name: string, path: string, composer: object, managedByComposer: boolean }} plugin
+ */
+function seedPluginRow(db, plugin, log) {
+  const existing = db.query('SELECT name FROM plugin WHERE name = ' + sqlStr(plugin.name));
   if (existing.length) {
-    log('SwagPlatformDemoData already in plugin table');
+    log(plugin.name + ' already in plugin table');
     return;
   }
-  const id = [...Array(32)].map(() => Math.floor(Math.random() * 16).toString(16)).join('');
-  const autoload = JSON.stringify({
-    'psr-4': { 'Swag\\PlatformDemoData\\': 'src/' },
-  });
-  const sqlStr = (s) => "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
+  const c = plugin.composer;
+  const extra = c.extra || {};
+  const id = randomId();
+  const author = Array.isArray(c.authors) && c.authors[0] ? c.authors[0].name || '' : '';
   db.exec(
     'INSERT INTO plugin (id, name, base_class, composer_name, active, managed_by_composer, path, autoload, author, copyright, license, version, created_at) VALUES (' +
-      "UNHEX('" +
-      id +
-      "'), 'SwagPlatformDemoData', " +
-      sqlStr('Swag\\PlatformDemoData\\SwagPlatformDemoData') +
-      ", 'swag/demo-data', 0, 1, 'vendor/swag/demo-data', " +
-      sqlStr(autoload) +
-      ", 'shopware AG', '(c) by shopware AG', 'MIT', '2.1.0', NOW(3))"
+      "UNHEX('" + id + "'), " +
+      sqlStr(plugin.name) + ', ' +
+      sqlStr(extra['shopware-plugin-class'] || '') + ', ' +
+      sqlStr(c.name || '') + ', 0, ' +
+      (plugin.managedByComposer ? 1 : 0) + ', ' +
+      sqlStr(plugin.path) + ', ' +
+      sqlStr(JSON.stringify(c.autoload || {})) + ', ' +
+      sqlStr(author) + ', ' +
+      sqlStr(extra.copyright || '') + ', ' +
+      sqlStr(c.license ? [].concat(c.license).join(', ') : '') + ', ' +
+      sqlStr(String(c.version || '1.0.0').replace(/^v/, '')) + ', NOW(3))'
   );
-  const langs = db.query('SELECT HEX(id) AS id FROM language');
+  const labels = typeof extra.label === 'object' && extra.label ? extra.label : {};
+  const descriptions = typeof extra.description === 'object' && extra.description ? extra.description : {};
+  const fallbackLabel = labels['en-GB'] || Object.values(labels)[0] || plugin.name;
+  const langs = db.query(
+    'SELECT HEX(l.id) AS id, lo.code AS code FROM language l LEFT JOIN locale lo ON lo.id = l.locale_id'
+  );
   for (const lang of langs) {
     const langId = String(lang.id || lang.ID || '');
     if (!langId) continue;
+    const code = String(lang.code || '');
     db.exec(
-      "INSERT INTO plugin_translation (plugin_id, language_id, label, description, created_at) VALUES (" +
-        "UNHEX('" +
-        id +
-        "'), UNHEX('" +
-        langId +
-        "'), 'Shopware 6 Demo data', 'Demo data plugin', NOW(3))"
+      'INSERT INTO plugin_translation (plugin_id, language_id, label, description, created_at) VALUES (' +
+        "UNHEX('" + id + "'), UNHEX('" + langId + "'), " +
+        sqlStr(labels[code] || fallbackLabel) + ', ' +
+        sqlStr(descriptions[code] || descriptions['en-GB'] || '') + ', NOW(3))'
     );
   }
-  log('seeded SwagPlatformDemoData plugin row');
+  log('seeded plugin row for ' + plugin.name + ' (' + plugin.path + ')');
 }
 
-function markFrwComplete(db) {
-  const id = [...Array(32)].map(() => Math.floor(Math.random() * 16).toString(16)).join('');
+function markFrwComplete(db, log) {
   try {
     db.exec(
       "INSERT INTO system_config (id, configuration_key, configuration_value, created_at) VALUES (UNHEX('" +
-        id +
+        randomId() +
         '\'), \'core.frw.completedAt\', \'{"_value":"2026-09-02 00:00:00"}\', NOW(6))'
     );
   } catch (e) {
@@ -189,13 +198,61 @@ function markFrwComplete(db) {
   }
 }
 
-async function main() {
-  if (existsSync(dumpPath) && existsSync(lockPath) && process.env.FORCE_INSTALL !== '1') {
-    log('dump and install.lock already exist; set FORCE_INSTALL=1 to rebuild');
-    return;
+/**
+ * Locate a plugin inside the Shopware tree. Accepts a plugin name
+ * (custom/plugins/<Name>, custom/static-plugins/<Name>) or a path relative
+ * to the tree (e.g. vendor/frosh/tools).
+ */
+export function resolvePlugin(shopwareRoot, ref) {
+  const value = String(ref || '').trim();
+  if (!value) throw new Error('empty plugin reference');
+  const candidates = value.includes('/')
+    ? [value]
+    : ['custom/plugins/' + value, 'custom/static-plugins/' + value];
+  for (const rel of candidates) {
+    const composerPath = join(shopwareRoot, rel, 'composer.json');
+    if (!existsSync(composerPath)) continue;
+    const composer = JSON.parse(readFileSync(composerPath, 'utf8'));
+    const baseClass = composer.extra && composer.extra['shopware-plugin-class'];
+    if (!baseClass) {
+      throw new Error(rel + '/composer.json has no extra.shopware-plugin-class — not a Shopware plugin');
+    }
+    return {
+      name: String(baseClass).split('\\').pop(),
+      path: rel.replace(/\/+$/, ''),
+      dir: join(shopwareRoot, rel),
+      composer,
+      managedByComposer: rel.startsWith('vendor/'),
+    };
   }
+  throw new Error(
+    'plugin not found: ' + value + ' (looked for ' + candidates.join(', ') + ' under ' + shopwareRoot + ')'
+  );
+}
+
+/**
+ * Run the Shopware installer against an in-memory MariaDB WASM, provision
+ * the admin user, install demo data + the given plugins, compile the theme
+ * and write the gzipped seed dump.
+ *
+ * @param {{ shopwareDir: string, dumpPath: string, plugins?: string[],
+ *   log?: (msg: string) => void }} options
+ */
+export async function installShopware(options) {
+  const shopwareRoot = resolve(options.shopwareDir);
+  const dumpPath = resolve(options.dumpPath);
+  const log = options.log || ((msg) => console.log('[' + new Date().toISOString() + '] ' + msg));
+  const shopwareVersion = detectShopwareVersion(shopwareRoot) || 'unknown';
+  const lockPath = join(shopwareRoot, 'install.lock');
+  const plugins = (options.plugins || []).map((ref) => resolvePlugin(shopwareRoot, ref));
 
   const patcher = join(shopwareRoot, 'overrides/patch-installer.php');
+  if (!existsSync(patcher)) {
+    throw new Error(
+      'overrides/patch-installer.php missing in ' + shopwareRoot +
+        ' — the tree needs the playground overrides (copy shopware/overrides + config/packages/playground.yaml)'
+    );
+  }
   const patched = spawnSync('php', [patcher], { cwd: shopwareRoot, stdio: 'inherit' });
   if (patched.status !== 0) {
     throw new Error('patch-installer.php failed');
@@ -241,7 +298,7 @@ async function main() {
     }
 
     log('running migrations');
-    await migrateAll(pg);
+    await migrateAll(pg, log);
 
     log('shop configuration');
     const setup = await pg.php.run({
@@ -296,29 +353,44 @@ async function main() {
       );
     }
 
-    markFrwComplete(pg.db);
-    writeEnvLocal();
+    markFrwComplete(pg.db, log);
+    writeEnvLocal(shopwareRoot);
     writeFileSync(lockPath, new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12));
     log('wrote install.lock');
 
     log('copying prebuilt administration/storefront bundle assets');
     copyBundlePublicAssets(shopwareRoot);
+    for (const plugin of plugins) {
+      copyPluginPublicAssets(shopwareRoot, plugin.dir, plugin.name);
+    }
 
-    log('theme:refresh');
-    log(await runShopwareConsole(pg, { command: 'theme:refresh' }));
-    log('theme:change Storefront');
-    log(
-      await runShopwareConsole(pg, {
-        command: 'theme:change',
-        'theme-name': 'Storefront',
-        '--all': true,
-        '--sync': true,
-      })
-    );
+    const compileTheme = async () => {
+      log('theme:refresh');
+      log(await runShopwareConsole(pg, { command: 'theme:refresh' }));
+      log('theme:change Storefront');
+      log(
+        await runShopwareConsole(pg, {
+          command: 'theme:change',
+          'theme-name': 'Storefront',
+          '--all': true,
+          '--sync': true,
+        })
+      );
+    };
+    await compileTheme();
 
     // plugin:refresh shells out to git via Composer, which PHP WASM cannot run.
     if (existsSync(join(shopwareRoot, 'vendor/swag/demo-data/composer.json'))) {
-      seedDemoDataPlugin(pg.db);
+      seedPluginRow(
+        pg.db,
+        {
+          name: 'SwagPlatformDemoData',
+          path: 'vendor/swag/demo-data',
+          managedByComposer: true,
+          composer: JSON.parse(readFileSync(join(shopwareRoot, 'vendor/swag/demo-data/composer.json'), 'utf8')),
+        },
+        log
+      );
       log('plugin:install --activate SwagPlatformDemoData');
       log(
         await runShopwareConsole(pg, {
@@ -332,6 +404,23 @@ async function main() {
       log('swag/demo-data not installed in this tree; skipping demo data');
     }
 
+    for (const plugin of plugins) {
+      seedPluginRow(pg.db, plugin, log);
+      log('plugin:install --activate ' + plugin.name);
+      log(
+        await runShopwareConsole(pg, {
+          command: 'plugin:install',
+          plugins: [plugin.name],
+          '--activate': true,
+          '--skip-asset-build': true,
+        })
+      );
+    }
+    if (plugins.length) {
+      // Plugins may extend the storefront theme: compile again with them active.
+      await compileTheme();
+    }
+
     mkdirSync(dirname(dumpPath), { recursive: true });
     log('dumping MariaDB WASM');
     const sql = dumpDatabase(pg.db, {
@@ -341,18 +430,45 @@ async function main() {
     const gz = gzipSync(Buffer.from(sql, 'utf8'));
     writeFileSync(dumpPath, gz);
     log('wrote ' + dumpPath + ' (' + gz.length + ' bytes gzip, ' + sql.length + ' bytes sql)');
-    const manifest = updateVersionsManifest(join(playgroundRoot, 'public'), shopwareVersion);
-    log('versions.json: ' + manifest.versions.map((v) => v.id).join(', '));
     // The install ran with a placeholder origin; drop the compiled cache so
     // neither the zip nor later Node boots inherit stale domain routing.
     rmSync(join(shopwareRoot, 'var/cache'), { recursive: true, force: true });
-    log('run npm run build' + (process.env.SHOPWARE_DIR ? ' with SHOPWARE_DIR=' + shopwareRoot : '') + ' to refresh the zip/assets');
+    return { shopwareVersion, dumpPath, plugins: plugins.map((p) => p.name) };
   } finally {
     await pg.close();
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const playgroundRoot = join(here, '..');
+  const shopwareRoot = process.env.SHOPWARE_DIR
+    ? resolve(process.env.SHOPWARE_DIR)
+    : join(playgroundRoot, 'shopware');
+  const shopwareVersion = detectShopwareVersion(shopwareRoot) || 'unknown';
+  const dumpPath = demoDumpPath(join(playgroundRoot, 'public'), shopwareVersion);
+  const lockPath = join(shopwareRoot, 'install.lock');
+
+  if (existsSync(dumpPath) && existsSync(lockPath) && process.env.FORCE_INSTALL !== '1') {
+    console.log('dump and install.lock already exist; set FORCE_INSTALL=1 to rebuild');
+    return;
+  }
+  const plugins = (process.env.PLAYGROUND_PLUGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  await installShopware({ shopwareDir: shopwareRoot, dumpPath, plugins });
+  console.log(
+    'run npm run build' +
+      (process.env.SHOPWARE_DIR ? ' with SHOPWARE_DIR=' + shopwareRoot : '') +
+      ' to package the demo'
+  );
+}
+
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

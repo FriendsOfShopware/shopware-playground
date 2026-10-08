@@ -8,20 +8,12 @@ import http from 'node:http';
 import { readFileSync, statSync, existsSync } from 'node:fs';
 import { extname, join, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isPhpAppRoute } from './app-route.mjs';
+import { isDemoAssetPath, isPhpAppRoute } from './app-route.mjs';
+import { defaultDemoAssetsDir } from './demo-build.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const mariadbDist = dirname(fileURLToPath(import.meta.resolve('lite4mariadb')));
 const port = Number(process.env.PORT || 4177);
-
-function defaultVersion() {
-  try {
-    const manifest = JSON.parse(readFileSync(join(root, 'public/versions.json'), 'utf8'));
-    return manifest.default || manifest.versions?.[0]?.id || '';
-  } catch {
-    return '';
-  }
-}
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -62,18 +54,10 @@ function resolvePath(urlPath) {
     return join(root, 'php', decoded.slice('/php/'.length));
   }
   // /theme|/media|/bundles|/thumbnail reach here only without the service
-  // worker (e.g. curl): serve the default version's assets.
-  if (
-    decoded.startsWith('/bundles/') ||
-    decoded.startsWith('/theme/') ||
-    decoded.startsWith('/media/') ||
-    decoded.startsWith('/thumbnail/')
-  ) {
-    const version = defaultVersion();
-    if (version) {
-      const versioned = join(root, 'public/versions', version, 'assets', decoded);
-      if (existsSync(versioned)) return versioned;
-    }
+  // worker (e.g. curl): serve the default demo's assets.
+  if (isDemoAssetPath(decoded)) {
+    const assetsDir = defaultDemoAssetsDir(join(root, 'public'));
+    if (assetsDir && existsSync(join(assetsDir, decoded))) return join(assetsDir, decoded);
   }
   if (decoded.startsWith('/src/')) {
     return join(root, decoded.slice(1));

@@ -1,11 +1,42 @@
 <script>
-  import { status, ready, versions, activeVersion, drawer } from './stores.js';
-  import { switchVersion, exportPlayground, resetPlayground, setStatus } from './playground.js';
+  import { status, ready, demos, activeDemo, drawer } from './stores.js';
+  import { switchDemo, exportPlayground, resetPlayground, setStatus } from './playground.js';
   import AdminModal from './AdminModal.svelte';
+
+  const OPEN_DEMO = '__open-demo__';
 
   let exporting = false;
   let resetting = false;
   let showAdmin = false;
+
+  /** Option text: the label, plus the Shopware version when the label omits it. */
+  function optionLabel(demo) {
+    const label = demo.label || demo.id;
+    if (demo.shopware && !label.includes(demo.shopware)) {
+      return label + ' · Shopware ' + demo.shopware;
+    }
+    return label;
+  }
+
+  /** Value that re-selects a demo: index demos by id, others by their ref. */
+  function optionValue(demo) {
+    if (demo.source === 'remote') return demo.manifestUrl;
+    return demo.id;
+  }
+
+  function onSelect(event) {
+    const value = event.currentTarget.value;
+    if (value === OPEN_DEMO) {
+      event.currentTarget.value = $activeDemo ? optionValue($activeDemo) : '';
+      const ref = prompt(
+        'Open a demo by name (uploaded with "playground demo upload") or by the URL of its demo.json:'
+      );
+      if (ref) switchDemo(ref);
+      return;
+    }
+    if ($activeDemo && value === optionValue($activeDemo)) return;
+    switchDemo(value);
+  }
 
   function openDrawer(tab) {
     drawer.update((d) =>
@@ -25,7 +56,7 @@
   }
 
   async function doReset() {
-    const label = $activeVersion ? ' for Shopware ' + $activeVersion : '';
+    const label = $activeDemo ? ' for ' + $activeDemo.label : '';
     if (!confirm('Reset the playground' + label + '?\n\nThe database is wiped and the demo data is re-imported.')) {
       return;
     }
@@ -42,18 +73,20 @@
 <div id="bar">
   <strong>Shopware playground</strong>
   <select
-    id="version"
-    title="Shopware version"
+    id="demo"
+    title="Demo"
     disabled={!$ready}
-    value={$activeVersion}
-    on:change={(e) => switchVersion(e.currentTarget.value)}
+    value={$activeDemo ? optionValue($activeDemo) : ''}
+    on:change={onSelect}
   >
-    {#if !$versions.list.length}
-      <option>…</option>
+    {#if !$demos.list.length}
+      <option value="">…</option>
     {/if}
-    {#each $versions.list as v (v.id)}
-      <option value={v.id}>{v.label || 'Shopware ' + v.id}</option>
+    {#each $demos.list as demo (demo.storageKey)}
+      <option value={optionValue(demo)}>{optionLabel(demo)}</option>
     {/each}
+    <option disabled>──────────</option>
+    <option value={OPEN_DEMO}>Open demo…</option>
   </select>
   <span id="status">{$status}</span>
   <span class="spacer"></span>

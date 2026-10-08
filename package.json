@@ -12,10 +12,12 @@
     "test": "node --test --test-force-exit --test-timeout=180000 --test-concurrency=1 test/*.test.mjs",
     "dev": "node src/build-shell.mjs --workers && vite",
     "start": "node src/serve.mjs",
-    "build": "node src/copy-assets.mjs",
+    "build": "node src/build.mjs",
+    "build:demo": "node src/build.mjs",
     "build:shell": "node src/build-shell.mjs",
     "deploy:cf": "node src/deploy-cf.mjs",
     "prepare-install": "node src/prepare-install.mjs",
+    "demo": "node src/cli.mjs demo",
     "pack-deploy": "node src/pack-deploy.mjs"
   },
   "dependencies": {

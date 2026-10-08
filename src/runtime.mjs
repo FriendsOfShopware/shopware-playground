@@ -15,7 +15,7 @@ import { Lite4MariaDB } from 'lite4mariadb';
 import { attachSqlBridge } from './sql-bridge.mjs';
 import { installSpawnStub } from './spawn-stub.mjs';
 import { seedShopware } from './db-seed.mjs';
-import { detectShopwareVersion, versionDumpPath } from './shopware-version.mjs';
+import { demoDumpPath, detectShopwareVersion } from './demo-build.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const playgroundRoot = join(here, '..');
@@ -28,7 +28,7 @@ export const SHOPWARE_PUBLIC_ROUTE = '/';
 
 const mainTreeVersion = detectShopwareVersion(defaultShopwareRoot) || 'unknown';
 export const SHOPWARE_VERSION = mainTreeVersion;
-export const SHOPWARE_DUMP_PATH = versionDumpPath(publicDir, mainTreeVersion);
+export const SHOPWARE_DUMP_PATH = demoDumpPath(publicDir, mainTreeVersion);
 
 async function loadPhpRuntime() {
   const { loadNodeRuntime } = await import('@php-wasm/node');
@@ -50,7 +50,7 @@ function loadInstalledDump() {
   if (existsSync(SHOPWARE_DUMP_PATH)) {
     return gunzipSync(readFileSync(SHOPWARE_DUMP_PATH)).toString('utf8');
   }
-  // Legacy location from before version bundles.
+  // Legacy location from before demo directories.
   const legacy = join(playgroundRoot, 'data/shopware.sql.gz');
   if (existsSync(legacy)) {
     return gunzipSync(readFileSync(legacy)).toString('utf8');

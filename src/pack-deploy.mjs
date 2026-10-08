@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Stage a static host tree (engine + version bundles) and zip it.
+ * Stage a static host tree (engine + built-in demos) and zip it.
  * Shop URLs are not baked in: the browser rewrites sales_channel_domain
  * to location.origin on boot.
  */
@@ -54,13 +54,14 @@ required(join(publicDir, 'index.html'), 'playground shell');
 required(join(publicDir, 'app.js'), 'bundled app.js (npm run build)');
 required(join(publicDir, 'browser-worker.js'), 'bundled browser-worker.js');
 required(join(publicDir, 'service-worker.js'), 'bundled service-worker.js');
-required(join(publicDir, 'versions.json'), 'version manifest (npm run build)');
+required(join(publicDir, 'demos.json'), 'demo index (npm run build)');
 required(join(mariadbDist, 'lite4mariadb.wasm'), 'lite4mariadb engine (npm install)');
 
-const manifest = JSON.parse(readFileSync(join(publicDir, 'versions.json'), 'utf8'));
-for (const v of manifest.versions || []) {
-  required(join(publicDir, 'versions', v.id, 'shopware.sql.gz'), 'installed dump for ' + v.id);
-  required(join(publicDir, 'versions', v.id, 'shopware.zip'), 'Shopware MEMFS zip for ' + v.id);
+const index = JSON.parse(readFileSync(join(publicDir, 'demos.json'), 'utf8'));
+for (const d of index.demos || []) {
+  required(join(publicDir, 'demos', d.id, 'demo.json'), 'demo manifest for ' + d.id);
+  required(join(publicDir, 'demos', d.id, 'shopware.sql.gz'), 'installed dump for ' + d.id);
+  required(join(publicDir, 'demos', d.id, 'shopware.zip'), 'Shopware MEMFS zip for ' + d.id);
 }
 
 if (existsSync(dest)) rmSync(dest, { recursive: true });
@@ -71,8 +72,8 @@ copyInto(mariadbDist, join(dest, 'mariadb'));
 copyInto(join(root, 'php'), join(dest, 'php'));
 
 // Administration assets are heavy and optional on size-constrained hosts.
-for (const v of manifest.versions || []) {
-  rmSync(join(dest, 'versions', v.id, 'assets', 'bundles', 'administration'), {
+for (const d of index.demos || []) {
+  rmSync(join(dest, 'demos', d.id, 'assets', 'bundles', 'administration'), {
     recursive: true,
     force: true,
   });

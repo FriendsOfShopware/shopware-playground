@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Load the playground page with Playwright (if browsers are available),
- * then exercise the toolbar: version select, SQL console, export.
+ * then exercise the toolbar: demo select, SQL console, export.
  */
 import { chromium } from 'playwright';
 
@@ -46,9 +46,12 @@ console.log('STATUS', status);
 console.log('HTML_LEN', html.length);
 console.log('HAS_SHOPWARE', /shopware/i.test(html));
 
-// Version switcher lists the built versions.
-const versionOptions = await page.$$eval('#version option', (opts) => opts.map((o) => o.value));
-console.log('VERSIONS', versionOptions.join(','));
+// Demo switcher lists the built-in demos (plus the "Open demo…" action,
+// which is not a demo).
+const versionOptions = await page.$$eval('#demo option', (opts) =>
+  opts.filter((o) => !o.disabled && !o.value.startsWith('__')).map((o) => o.value)
+);
+console.log('DEMOS', versionOptions.join(','));
 
 // SQL console: open drawer, run a query against the live MariaDB WASM.
 await page.click('#btn-database');
@@ -136,8 +139,7 @@ await page.waitForFunction(
 console.log('QUICKNAV', quickNavVisible);
 console.log('ADDR_NAV', await page.inputValue('#addr'));
 
-// Version toggle: switch to the non-default version, wait for reboot,
-// then switch back.
+// Demo toggle: switch to the non-default built-in demo and wait for reboot.
 async function waitForShop() {
   await page.waitForFunction(
     () => {
@@ -159,11 +161,11 @@ async function waitForShop() {
 let toggled = '';
 let toggleOk = true;
 if (versionOptions.length > 1) {
-  const activeOption = await page.inputValue('#version');
+  const activeOption = await page.inputValue('#demo');
   toggled = versionOptions.find((v) => v !== activeOption) || versionOptions[1];
   await Promise.all([
     page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60_000 }),
-    page.selectOption('#version', toggled),
+    page.selectOption('#demo', toggled),
   ]);
   await waitForShop();
   // The status flips to HTTP 200 when the PHP response is ready; the iframe
@@ -188,12 +190,12 @@ if (versionOptions.length > 1) {
       return el.srcdoc || '';
     }
   });
-  console.log('TOGGLED_VERSION', toggled);
+  console.log('TOGGLED_DEMO', toggled);
   console.log('TOGGLED_STATUS', toggledStatus);
   console.log('TOGGLED_HAS_SHOPWARE', /shopware/i.test(toggledHtml));
   toggleOk = /shopware/i.test(toggledHtml) && toggledHtml.length > 1000 && !/^Error:/.test(toggledStatus || '');
 } else {
-  console.log('TOGGLE_SKIPPED single version');
+  console.log('TOGGLE_SKIPPED single demo');
 }
 
 if (screenshot) {

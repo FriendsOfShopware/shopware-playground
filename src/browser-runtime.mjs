@@ -1,11 +1,11 @@
 /**
  * Browser runtime: PHP web WASM + lite4mariadb. No node: imports.
- * Shopware production tree is loaded from /shopware.zip into PHP MEMFS.
+ * The demo's Shopware tree is loaded from its shopware.zip into PHP MEMFS.
  *
- * Persistence: the database lives in IndexedDB (idb://shopware-playground),
- * so reboots skip the SQL dump import. The lite4mariadb engine is served
- * unbundled from /mariadb/* (node_modules/lite4mariadb/dist) so its
- * Emscripten pthread workers resolve next to the glue script.
+ * Persistence: the database lives in IndexedDB (idb://shopware-playground-
+ * <storageKey>), so reboots skip the SQL dump import. The lite4mariadb
+ * engine is served unbundled from /mariadb/* (node_modules/lite4mariadb/dist)
+ * so its Emscripten pthread workers resolve next to the glue script.
  */
 import { PHP, PHPRequestHandler, setPhpIniEntries } from '@php-wasm/universal';
 import { loadPlaygroundWebRuntime } from './php-web-runtime.mjs';
@@ -13,6 +13,7 @@ import { Lite4MariaDB } from '/mariadb/index.mjs';
 import { attachSqlBridge } from './sql-bridge.mjs';
 import { installSpawnStub } from './spawn-stub.mjs';
 import { seedShopware } from './db-seed.mjs';
+import { idbDataDir } from './idb-names.mjs';
 
 export const SHOPWARE_DOCUMENT_ROOT = '/shopware/public';
 export const SHOPWARE_PUBLIC_ROUTE = '/';
@@ -32,19 +33,22 @@ async function loadInstalledDump(dumpUrl) {
   return await new Response(stream).text();
 }
 
+/**
+ * @param {{ storageKey?: string, zipUrl: string, dumpUrl?: string, dumpSql?: string,
+ *   absoluteUrl?: string, dataDir?: string, db?: any, mariadb?: object, skipDump?: boolean }} options
+ */
 export async function createPlayground(options = {}) {
-  const version = options.version || '';
+  if (!options.zipUrl) throw new Error('createPlayground: zipUrl is required');
   const db =
     options.db ||
     (await Lite4MariaDB.create({
-      dataDir:
-        options.dataDir ||
-        'idb://shopware-playground' + (version ? '-' + version : ''),
+      dataDir: options.dataDir || idbDataDir(options.storageKey || ''),
       ...(options.mariadb || {}),
     }));
 
   await seedShopware(db, {
-    dumpSql: options.dumpSql || (await loadInstalledDump(options.dumpUrl || '/shopware.sql.gz')),
+    dumpSql:
+      options.dumpSql || (options.dumpUrl ? await loadInstalledDump(options.dumpUrl) : null),
     absoluteUrl:
       options.absoluteUrl || (typeof location !== 'undefined' ? location.origin : ''),
     skipDump: options.skipDump,
@@ -59,9 +63,9 @@ export async function createPlayground(options = {}) {
   php.writeFile('/internal/playground_prepend.php', await prependRes.text());
   php.writeFile('/internal/playground_skip_heavy_migrations', '1');
 
-  const zipRes = await fetch(options.zipUrl || '/shopware.zip');
+  const zipRes = await fetch(options.zipUrl);
   if (!zipRes.ok) {
-    throw new Error('Shopware zip missing at ' + (options.zipUrl || '/shopware.zip') + '; run node src/copy-assets.mjs');
+    throw new Error('Shopware zip missing at ' + options.zipUrl + ' (HTTP ' + zipRes.status + ')');
   }
   php.writeFile('/tmp/shopware.zip', new Uint8Array(await zipRes.arrayBuffer()));
   php.mkdir('/shopware');

@@ -7,7 +7,7 @@
  *   crossOriginIsolated for SharedArrayBuffer)
  * - /mariadb/* served from node_modules/lite4mariadb/dist
  * - /php/* served from the local php/ dir (auto_prepend)
- * - /bundles|theme|media|thumbnail fallback to the default version's assets
+ * - /bundles|theme|media|thumbnail fallback to the default demo's assets
  *   (only hit without the service worker, e.g. curl)
  * - / and PHP app routes serve public/index.html, with the script tag
  *   pointed at /src/browser-entry.mjs so Vite transforms + HMRs the shell
@@ -20,7 +20,8 @@ import { dirname, extname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
-import { isPhpAppRoute } from './src/app-route.mjs';
+import { isDemoAssetPath, isPhpAppRoute } from './src/app-route.mjs';
+import { defaultDemoAssetsDir } from './src/demo-build.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(root, 'public');
@@ -49,15 +50,6 @@ const TYPES = {
   '.avif': 'image/avif',
   '.php': 'application/x-httpd-php',
 };
-
-function defaultVersion() {
-  try {
-    const manifest = JSON.parse(readFileSync(join(publicDir, 'versions.json'), 'utf8'));
-    return manifest.default || manifest.versions?.[0]?.id || '';
-  } catch {
-    return '';
-  }
-}
 
 function sendFile(res, filePath) {
   if (relative(root, filePath).startsWith('..')) {
@@ -125,18 +117,10 @@ function playgroundShell() {
             sendFile(res, join(root, 'shopware', urlPath.slice('/shopware-files/'.length)));
             return;
           }
-          if (
-            urlPath.startsWith('/bundles/') ||
-            urlPath.startsWith('/theme/') ||
-            urlPath.startsWith('/media/') ||
-            urlPath.startsWith('/thumbnail/')
-          ) {
-            const version = defaultVersion();
-            const versioned = version
-              ? join(publicDir, 'versions', version, 'assets', urlPath)
-              : '';
-            if (versioned && existsSync(versioned)) {
-              sendFile(res, versioned);
+          if (isDemoAssetPath(urlPath)) {
+            const assetsDir = defaultDemoAssetsDir(publicDir);
+            if (assetsDir && existsSync(join(assetsDir, urlPath))) {
+              sendFile(res, join(assetsDir, urlPath));
               return;
             }
           }
@@ -166,7 +150,7 @@ function playgroundShell() {
 
 export default defineConfig(({ command }) => ({
   plugins: [svelte(), playgroundShell()],
-  // Dev serves public/ statically (versions bundles, prebuilt worker/SW);
+  // Dev serves public/ statically (demo directories, prebuilt worker/SW);
   // build must not copy it into itself (app.js is emitted there).
   publicDir: command === 'serve' ? 'public' : false,
   server: {

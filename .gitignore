@@ -6,20 +6,22 @@ public/app.js
 public/browser-worker.js
 public/service-worker.js
 public/assets/
-public/versions/
-public/versions.json
+public/demos/
+public/demos.json
 
-# additional Shopware version trees for the toggle (composer create-project);
+# additional built-in Shopware version trees (composer create-project);
 # only the playground-specific customizations are committed
 versions-src/*/*
 !versions-src/*/shopware/
 versions-src/*/shopware/*
 !versions-src/*/shopware/overrides/
 !versions-src/*/shopware/config/
+!versions-src/*/shopware/src/
+versions-src/*/shopware/src/Controller/
 !versions-src/*/shopware/composer.json
 !versions-src/*/shopware/composer.lock
 
-# persistent MariaDB datadirs (lite4mariadb NODEFS, per version)
+# persistent MariaDB datadirs (lite4mariadb NODEFS, per Shopware version)
 data/mariadb*/
 
 # CLI snapshots (playground snapshot create)

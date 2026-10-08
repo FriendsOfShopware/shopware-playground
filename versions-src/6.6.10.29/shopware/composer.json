@@ -4,7 +4,7 @@
   "require": {
     "composer-runtime-api": "^2.0",
     "shopware/administration": "*",
-    "shopware/core": "v6.6.10.23",
+    "shopware/core": "v6.6.10.29",
     "shopware/elasticsearch": "*",
     "shopware/storefront": "*",
     "swag/demo-data": "^2.1",
